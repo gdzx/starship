@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.0](https://github.com/starship/starship/compare/v1.9.1...v1.10.0) (2022-06-29)
+
+
+### Miscellaneous Chores
+
+* **master:** release 1.10.0 ([b974610](https://github.com/starship/starship/commit/b9746100e2ee3746ea418e26ebc50494710a9d03))
+
 ## [1.9.1](https://github.com/starship/starship/compare/v1.9.0...v1.9.1) (2022-06-27)
 
 
