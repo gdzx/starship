@@ -1,3 +1,4 @@
+use git2::Repository;
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::{Context, Module, ModuleConfig};
@@ -25,16 +26,22 @@ pub fn module<'a>(context: &'a Context) -> Option<Module<'a>> {
     };
 
     let repo = context.get_repo().ok()?;
+    let mut branch_name = repo.branch.as_ref()?.to_owned();
 
-    if config.only_attached {
+    if config.only_attached || branch_name == "HEAD" {
         if let Ok(git_repo) = repo.open() {
             if git_repo.head_detached().ok()? {
-                return None;
+                if config.only_attached {
+                    return None;
+                }
+
+                if let Some(name) = get_detached_refname(&git_repo) {
+                    branch_name = name;
+                }
             }
         }
     }
 
-    let branch_name = repo.branch.as_ref()?;
     let mut graphemes: Vec<&str> = branch_name.graphemes(true).collect();
 
     if config
@@ -120,6 +127,40 @@ fn get_first_grapheme(text: &str) -> &str {
     UnicodeSegmentation::graphemes(text, true)
         .next()
         .unwrap_or("")
+}
+
+fn get_detached_refname(repo: &Repository) -> Option<String> {
+    for entry in repo.reflog("HEAD").ok()?.iter() {
+        let msg = match entry.message() {
+            Some(m) => m,
+            None => continue,
+        };
+
+        if !msg.starts_with("checkout: moving from") {
+            continue;
+        }
+
+        let to = " to ";
+        let mut buf = match msg.find(to) {
+            Some(i) => msg[i + to.len()..].trim(),
+            None => continue,
+        };
+
+        // Resolve to filter out commit IDs and relative references.
+        let rf = match repo.resolve_reference_from_short_name(buf) {
+            Ok(r) => r,
+            Err(_) => break,
+        };
+
+        // Trim refname path prefixes like refs/remotes/ and refs/tags/.
+        if let Some(name) = rf.shorthand().or_else(|| rf.name()) {
+            buf = name;
+        }
+
+        return Some(buf.to_owned());
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -317,6 +358,130 @@ mod tests {
             Color::Purple
                 .bold()
                 .paint(format!("\u{e0a0} {}", "test_branch")),
+        ));
+
+        assert_eq!(expected, actual);
+        repo_dir.close()
+    }
+
+    #[test]
+    fn test_render_branch_detached_remote() -> io::Result<()> {
+        let repo_dir = fixture_repo(FixtureProvider::Git)?;
+
+        create_command("git")?
+            .args(&["checkout", "origin/master"])
+            .current_dir(&repo_dir.path())
+            .output()?;
+
+        let actual = ModuleRenderer::new("git_branch")
+            .path(&repo_dir.path())
+            .collect();
+
+        let expected = Some(format!(
+            "on {} ",
+            Color::Purple
+                .bold()
+                .paint(format!("\u{e0a0} {}", "origin/master")),
+        ));
+
+        assert_eq!(expected, actual);
+        repo_dir.close()
+    }
+
+    #[test]
+    fn test_render_branch_detached_tag() -> io::Result<()> {
+        let repo_dir = fixture_repo(FixtureProvider::Git)?;
+
+        create_command("git")?
+            .args(&["tag", "v0.1.0", "HEAD~1"])
+            .current_dir(&repo_dir.path())
+            .output()?;
+
+        create_command("git")?
+            .args(&["checkout", "v0.1.0"])
+            .current_dir(&repo_dir.path())
+            .output()?;
+
+        let actual = ModuleRenderer::new("git_branch")
+            .path(&repo_dir.path())
+            .collect();
+
+        let expected = Some(format!(
+            "on {} ",
+            Color::Purple.bold().paint(format!("\u{e0a0} {}", "v0.1.0")),
+        ));
+
+        assert_eq!(expected, actual);
+        repo_dir.close()
+    }
+
+    #[test]
+    fn test_render_branch_detached_remote_full_refname() -> io::Result<()> {
+        let repo_dir = fixture_repo(FixtureProvider::Git)?;
+
+        create_command("git")?
+            .args(&["checkout", "refs/remotes/origin/master"])
+            .current_dir(&repo_dir.path())
+            .output()?;
+
+        let actual = ModuleRenderer::new("git_branch")
+            .path(&repo_dir.path())
+            .collect();
+
+        let expected = Some(format!(
+            "on {} ",
+            Color::Purple
+                .bold()
+                .paint(format!("\u{e0a0} {}", "origin/master")),
+        ));
+
+        assert_eq!(expected, actual);
+        repo_dir.close()
+    }
+
+    #[test]
+    fn test_render_branch_detached_tag_full_refname() -> io::Result<()> {
+        let repo_dir = fixture_repo(FixtureProvider::Git)?;
+
+        create_command("git")?
+            .args(&["tag", "v0.1.0", "HEAD~1"])
+            .current_dir(&repo_dir.path())
+            .output()?;
+
+        create_command("git")?
+            .args(&["checkout", "refs/tags/v0.1.0"])
+            .current_dir(&repo_dir.path())
+            .output()?;
+
+        let actual = ModuleRenderer::new("git_branch")
+            .path(&repo_dir.path())
+            .collect();
+
+        let expected = Some(format!(
+            "on {} ",
+            Color::Purple.bold().paint(format!("\u{e0a0} {}", "v0.1.0")),
+        ));
+
+        assert_eq!(expected, actual);
+        repo_dir.close()
+    }
+
+    #[test]
+    fn test_render_branch_detached_relative() -> io::Result<()> {
+        let repo_dir = fixture_repo(FixtureProvider::Git)?;
+
+        create_command("git")?
+            .args(&["checkout", "@~1"])
+            .current_dir(&repo_dir.path())
+            .output()?;
+
+        let actual = ModuleRenderer::new("git_branch")
+            .path(&repo_dir.path())
+            .collect();
+
+        let expected = Some(format!(
+            "on {} ",
+            Color::Purple.bold().paint(format!("\u{e0a0} {}", "HEAD")),
         ));
 
         assert_eq!(expected, actual);
